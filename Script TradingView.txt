@@ -1,0 +1,229 @@
+//@version=6
+indicator("Adaptive Investment Analysis Table", overlay=true)
+
+// ─────────────────────────────────────────────
+// INVESTMENT STRATEGY (NOUVEAU : Sélection de la durée avec descriptions claires)
+// ─────────────────────────────────────────────
+grp0 = "Investment Strategy"
+investmentPeriod = input.string("Medium-term (3-12 months)", "Investment Period",
+     options=["Short-term (0-3 months)", "Medium-term (3-12 months)", "Long-term (12+ months)"],
+     group=grp0)
+useAutoParams = input.bool(true, "Auto-adjust Parameters", tooltip="Si activé, les paramètres sont ajustés automatiquement selon la durée d'investissement.", group=grp0)
+
+// ─────────────────────────────────────────────
+// CORE SETTINGS (Paramètres de base adaptatifs)
+// ─────────────────────────────────────────────
+grp1 = "Core Settings"
+sequenceLen = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 20 : investmentPeriod == "Medium-term (3-12 months)" ? 60 : 120) :
+     input.int(60, "Sequence Length (bars)", minval=10, maxval=240, group=grp1)
+
+volLen = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 10 : investmentPeriod == "Medium-term (3-12 months)" ? 20 : 50) :
+     input.int(20, "Volatility Window", minval=5, maxval=100, group=grp1)
+
+longVolLen = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 50 : investmentPeriod == "Medium-term (3-12 months)" ? 100 : 200) :
+     input.int(100, "Long Vol Baseline Window", minval=20, maxval=300, group=grp1)
+
+// ─────────────────────────────────────────────
+// MEMORY (Mémoire adaptative)
+// ─────────────────────────────────────────────
+grp2 = "Memory (Recurrent State)"
+memoryDecay = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.7 : investmentPeriod == "Medium-term (3-12 months)" ? 0.85 : 0.9) :
+     input.float(0.85, "Memory Decay (α)", minval=0.1, maxval=0.99, step=0.01, group=grp2)
+
+// ─────────────────────────────────────────────
+// SIGNAL WEIGHTS (Poids des signaux adaptatifs)
+// ─────────────────────────────────────────────
+grp3 = "Signal Weights"
+w_trend = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.25 : investmentPeriod == "Medium-term (3-12 months)" ? 0.35 : 0.40) :
+     input.float(0.35, "Weight: Trend Direction", minval=0.0, maxval=1.0, step=0.05, group=grp3)
+
+w_mom = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.35 : investmentPeriod == "Medium-term (3-12 months)" ? 0.30 : 0.25) :
+     input.float(0.30, "Weight: Momentum", minval=0.0, maxval=1.0, step=0.05, group=grp3)
+
+w_rsi = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.30 : investmentPeriod == "Medium-term (3-12 months)" ? 0.20 : 0.15) :
+     input.float(0.20, "Weight: RSI", minval=0.0, maxval=1.0, step=0.05, group=grp3)
+
+w_mem = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.10 : investmentPeriod == "Medium-term (3-12 months)" ? 0.15 : 0.20) :
+     input.float(0.15, "Weight: Memory State", minval=0.0, maxval=1.0, step=0.05, group=grp3)
+
+// ─────────────────────────────────────────────
+// THRESHOLDS & DISPLAY (Seuils adaptatifs)
+// ─────────────────────────────────────────────
+grp4 = "Thresholds & Display"
+longThresh = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.55 : investmentPeriod == "Medium-term (3-12 months)" ? 0.60 : 0.65) :
+     input.float(0.60, "Bull Entry Threshold", minval=0.51, maxval=0.95, step=0.01, group=grp4)
+
+shortThresh = useAutoParams ?
+     (investmentPeriod == "Short-term (0-3 months)" ? 0.45 : investmentPeriod == "Medium-term (3-12 months)" ? 0.40 : 0.35) :
+     input.float(0.40, "Bear Entry Threshold", minval=0.05, maxval=0.49, step=0.01, group=grp4)
+
+showVolFilter = input.bool(true, "Dim signals in low-volatility regime", group=grp4)
+
+// ─────────────────────────────────────────────
+// NEW CRITERIA (Critères fondamentaux - manuels)
+// ─────────────────────────────────────────────
+grp5 = "New Criteria"
+intrinsicValue = input.float(100.0, "Intrinsic Value", group=grp5)
+roe = input.float(12.0, "ROE (%)", group=grp5)
+roic = input.float(10.0, "ROIC (%)", group=grp5)
+debtToEbitda = input.float(2.5, "Dette/EBITDA", group=grp5)
+quantitativeValueScore = input.float(70.0, "Quantitative Value Score", minval=0, maxval=100, group=grp5)
+
+// ─────────────────────────────────────────────
+// TABLE SETTINGS
+// ─────────────────────────────────────────────
+grp6 = "Table Settings"
+tablePosition = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grp6)
+bgTransparency = input.int(80, "Background Transparency", minval=0, maxval=100, group=grp6)
+bringToFront = input.bool(true, "Bring Table to Front", group=grp6)
+
+// ─────────────────────────────────────────────
+// CALCULS TECHNIQUES (inchangés)
+// ─────────────────────────────────────────────
+ret = close / close[1] - 1
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+trendFast = close > ema20 ? 1.0 : -1.0
+trendMid = ema20 > ema50 ? 1.0 : -1.0
+trendSlow = ema50 > ema200 ? 1.0 : -1.0
+trendScore = trendFast * 0.50 + trendMid * 0.30 + trendSlow * 0.20
+mom10 = close / close[10] - 1
+mom30 = close / close[30] - 1
+mom60 = close / close[math.min(sequenceLen, bar_index)] - 1
+momRaw = mom10 * 0.50 + mom30 * 0.30 + mom60 * 0.20
+momMean = ta.sma(momRaw, sequenceLen)
+momStd = math.max(ta.stdev(momRaw, sequenceLen), 1e-10)
+momNorm = (momRaw - momMean) / momStd
+momScore = math.max(-1.0, math.min(1.0, momNorm / 2.0))
+rsiVal = ta.rsi(close, 14)
+rsiScore = (rsiVal - 50.0) / 50.0
+volNow = ta.stdev(ret, volLen)
+volBaseline = ta.sma(volNow, longVolLen)
+highVol = volNow > volBaseline
+volRatio = math.min(volNow / math.max(volBaseline, 1e-10), 2.0) / 2.0
+signal_t = trendScore * 0.50 + momScore * 0.30 + rsiScore * 0.20
+var float memory = 0.0
+memory := memoryDecay * nz(memory[1]) + (1.0 - memoryDecay) * signal_t
+memNorm = math.max(-1.0, math.min(1.0, memory / 0.5))
+totalW = w_trend + w_mom + w_rsi + w_mem
+scoreRaw = (w_trend * trendScore + w_mom * momScore + w_rsi * rsiScore + w_mem * memNorm) / math.max(totalW, 1e-10)
+volConfidence = showVolFilter ? (0.5 + 0.5 * volRatio) : 1.0
+score = math.max(-1.0, math.min(1.0, scoreRaw)) * volConfidence
+probBull = math.max(0.0, math.min(100.0, 50.0 + score * 50.0))
+probBear = 100.0 - probBull
+isBull = probBull >= longThresh * 100
+isBear = probBull <= shortThresh * 100
+regimeTxt = isBull ? "BULLISH" : isBear ? "BEARISH" : "NEUTRAL"
+volTxt = highVol ? "HIGH ◆" : "LOW  ◇"
+
+// ─────────────────────────────────────────────
+// CRITÈRES FONDAMENTAUX ET TECHNIQUES
+// ─────────────────────────────────────────────
+marginOfSafety = close <= intrinsicValue * 0.7
+goodROE = roe >= 15
+goodROIC = roic >= 15
+reasonableDebt = debtToEbitda < 2.0
+
+aboveEMA20 = close > ema20
+aboveEMA50 = close > ema50
+graphicalAnalysisGood = aboveEMA20 and aboveEMA50
+
+macdLine = ta.ema(close, 12) - ta.ema(close, 26)
+macdSignal = ta.ema(macdLine, 9)
+rsiGood = rsiVal < 30
+macdGood = macdLine > macdSignal
+volumeGood = volume > ta.sma(volume, 20)
+technicalIndicatorsGood = rsiGood or macdGood or volumeGood
+
+quantitativeValueGood = quantitativeValueScore >= 70
+
+// ─────────────────────────────────────────────
+// POSITION DU TABLEAU
+// ─────────────────────────────────────────────
+getPosition() =>
+     tablePosition == "Top Right" ? position.top_right :
+     tablePosition == "Top Left" ? position.top_left :
+     tablePosition == "Bottom Right" ? position.bottom_right :
+     position.bottom_left
+
+// ─────────────────────────────────────────────
+// TABLEAU FINAL (15 lignes : 1 ligne pour la stratégie + 14 lignes de données)
+// ─────────────────────────────────────────────
+var table combinedTable = table.new(getPosition(), 2, 15,
+     bgcolor=color.new(color.black, bgTransparency),
+     border_color=color.new(color.gray, 60),
+     border_width=1)
+
+if barstate.islast
+    // ===== NOUVELLE LIGNE 0 : Stratégie active =====
+    table.cell(combinedTable, 0, 0, "Stratégie", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 0,
+         (useAutoParams ? "Auto: " : "Manuel: ") + investmentPeriod,
+         text_color=color.yellow, text_size=size.small)
+
+    // ===== Lignes 1 à 14 : Données (décalées d'une ligne) =====
+    // Ligne 1 : Bull %
+    table.cell(combinedTable, 0, 1, "Bull %", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 1, str.tostring(math.round(probBull, 1)) + "%", text_color=isBull ? color.green : color.red, text_size=size.small)
+
+    // Ligne 2 : Bear %
+    table.cell(combinedTable, 0, 2, "Bear %", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 2, str.tostring(math.round(probBear, 1)) + "%", text_color=isBear ? color.red : color.orange, text_size=size.small)
+
+    // Ligne 3 : Regime
+    table.cell(combinedTable, 0, 3, "Regime", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 3, regimeTxt, text_color=isBull ? color.green : isBear ? color.red : color.orange, text_size=size.small)
+
+    // Ligne 4 : Volatility
+    table.cell(combinedTable, 0, 4, "Volatility", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 4, volTxt, text_color=highVol ? color.yellow : color.gray, text_size=size.small)
+
+    // Ligne 5 : Trend Score
+    table.cell(combinedTable, 0, 5, "Trend Score", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 5, str.tostring(math.round(trendScore * 100, 0)), text_color=trendScore > 0 ? color.green : color.red, text_size=size.small)
+
+    // Ligne 6 : Memory
+    table.cell(combinedTable, 0, 6, "Memory", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 6, str.tostring(math.round(memNorm * 100, 0)), text_color=memNorm > 0 ? color.green : color.red, text_size=size.small)
+
+    // Ligne 7 : Margin of Safety (30%)
+    table.cell(combinedTable, 0, 7, "Margin of Safety (30%)", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 7, marginOfSafety ? "✅" : "❌", text_color=marginOfSafety ? color.green : color.red, text_size=size.small)
+
+    // Ligne 8 : ROE/ROIC ≥ 15%
+    table.cell(combinedTable, 0, 8, "ROE/ROIC ≥ 15%", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 8, (goodROE and goodROIC) ? "✅" : "❌", text_color=(goodROE and goodROIC) ? color.green : color.red, text_size=size.small)
+
+    // Ligne 9 : Dette/EBITDA < 2
+    table.cell(combinedTable, 0, 9, "Dette/EBITDA < 2", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 9, reasonableDebt ? "✅" : "❌", text_color=reasonableDebt ? color.green : color.red, text_size=size.small)
+
+    // Ligne 10 : Analyse Graphique
+    table.cell(combinedTable, 0, 10, "Analyse Graphique", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 10, graphicalAnalysisGood ? "✅" : "❌", text_color=graphicalAnalysisGood ? color.green : color.red, text_size=size.small)
+
+    // Ligne 11 : Indicateurs Techniques
+    table.cell(combinedTable, 0, 11, "Indicateurs Techniques", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 11, technicalIndicatorsGood ? "✅" : "❌", text_color=technicalIndicatorsGood ? color.green : color.red, text_size=size.small)
+
+    // Ligne 12 : Quantitative Value
+    table.cell(combinedTable, 0, 12, "Quantitative Value", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 12, quantitativeValueGood ? "✅" : "❌", text_color=quantitativeValueGood ? color.green : color.red, text_size=size.small)
+
+    // Ligne 13 : RSI
+    table.cell(combinedTable, 0, 13, "RSI", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 13, str.tostring(math.round(rsiVal, 1)), text_color=rsiVal < 50 ? color.green : color.red, text_size=size.small)
+
+    // Ligne 14 : Memory State
+    table.cell(combinedTable, 0, 14, "Memory State", text_color=color.white, text_size=size.small)
+    table.cell(combinedTable, 1, 14, str.tostring(math.round(memory * 100, 0)), text_color=memory > 0 ? color.green : color.red, text_size=size.small)
